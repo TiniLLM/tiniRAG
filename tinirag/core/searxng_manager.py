@@ -148,10 +148,8 @@ def start_daemon(
         import importlib
 
         importlib.import_module("searx.webapp")
-    except ImportError as exc:
-        raise RuntimeError(
-            "searx.webapp not importable. Ensure searxng is installed: pip install searxng"
-        ) from exc
+    except ImportError:
+        return False  # caller (startup_check) prints appropriate warning
 
     env = os.environ.copy()
     env["SEARXNG_SETTINGS_PATH"] = str(SETTINGS_FILE)

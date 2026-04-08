@@ -57,13 +57,13 @@ async def optimize_query(
     query: str,
     *,
     client: AsyncOpenAI | None = None,
-    model: str = "llama3",
+    model: str | None = None,
     use_llm: bool = False,
 ) -> str:
     """Full tiered optimizer: regex first, LLM only if still verbose."""
     result = regex_optimize(query)
 
-    if use_llm and client is not None and len(result.split()) > 8:
+    if use_llm and client is not None and model is not None and len(result.split()) > 8:
         result = await llm_optimize(result, client, model)
 
     return result

@@ -25,6 +25,7 @@ from tinirag.core.engine import (
 def _make_cfg(**kwargs) -> TiniRAGConfig:
     cfg = TiniRAGConfig()
     cfg.llm.stream = False  # simplify tests — no streaming
+    cfg.llm.model = "llama3"  # explicit so tests don't trigger auto-detection
     cfg.search.managed_searxng = False  # tests don't trigger the SearXNG daemon
     for key, val in kwargs.items():
         parts = key.split(".")
@@ -104,7 +105,7 @@ class TestStartupCheck:
 
     @pytest.mark.asyncio
     async def test_managed_searxng_calls_ensure_running(self):
-        """When managed_searxng=True, startup_check must call ensure_running."""
+        """When managed_searxng=True and no_search=False, startup_check calls ensure_running."""
         cfg = _make_cfg()
         cfg.search.managed_searxng = True
         with (
@@ -112,7 +113,7 @@ class TestStartupCheck:
             patch("tinirag.core.engine.check_model_available", return_value=True),
             patch("tinirag.core.searxng_manager.ensure_running", return_value=True) as mock_er,
         ):
-            await startup_check(cfg)
+            await startup_check(cfg, no_search=False)
             mock_er.assert_called_once()
 
     @pytest.mark.asyncio
@@ -127,6 +128,46 @@ class TestStartupCheck:
         ):
             await startup_check(cfg)
             mock_er.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_search_skips_searxng_startup(self):
+        """When no_search=True, SearXNG must NOT be started even if managed_searxng=True."""
+        cfg = _make_cfg()
+        cfg.search.managed_searxng = True
+        with (
+            patch("tinirag.core.engine.is_ollama_running", return_value=True),
+            patch("tinirag.core.engine.check_model_available", return_value=True),
+            patch("tinirag.core.searxng_manager.ensure_running") as mock_er,
+        ):
+            await startup_check(cfg, no_search=True)
+            mock_er.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_model_none_triggers_auto_detect(self):
+        """When cfg.llm.model is None, startup_check auto-detects and sets the model."""
+        cfg = _make_cfg()
+        cfg.llm.model = None  # simulate no explicit config
+        with (
+            patch("tinirag.core.engine.is_ollama_running", return_value=True),
+            patch("tinirag.core.engine.check_model_available", return_value=True),
+            patch("tinirag.core.engine.detect_available_model", return_value="qwen2.5:3b"),
+            patch("tinirag.core.engine.print_info"),
+        ):
+            await startup_check(cfg)
+        assert cfg.llm.model == "qwen2.5:3b"
+
+    @pytest.mark.asyncio
+    async def test_model_none_no_models_exits(self):
+        """When cfg.llm.model is None and no models found, exit cleanly."""
+        cfg = _make_cfg()
+        cfg.llm.model = None
+        with (
+            patch("tinirag.core.engine.is_ollama_running", return_value=True),
+            patch("tinirag.core.engine.detect_available_model", return_value=None),
+            patch("tinirag.core.engine.print_error"),
+        ):
+            with pytest.raises(SystemExit):
+                await startup_check(cfg)
 
     @pytest.mark.asyncio
     async def test_searxng_start_failure_is_non_fatal(self):

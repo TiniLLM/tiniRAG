@@ -16,7 +16,8 @@ class TestLoadConfig:
     def test_defaults_populated(self):
         cfg = load_config()
         assert cfg.llm.endpoint  # non-empty
-        assert cfg.llm.model  # non-empty
+        # model defaults to None — auto-detected at runtime from installed Ollama models
+        assert cfg.llm.model is None or isinstance(cfg.llm.model, str)
         assert cfg.search.num_results > 0
         assert 0.0 <= cfg.llm.temperature <= 1.0
         assert cfg.llm.max_tokens > 0

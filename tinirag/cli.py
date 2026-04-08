@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import subprocess
+import sys
 from typing import Optional
 
 import typer
 from rich.console import Console
 from rich.table import Table
 
-from tinirag.config import GUARDRAIL_LOG, SEARXNG_LOG_FILE, load_config
+from tinirag.config import GUARDRAIL_LOG, SEARXNG_LOG_FILE, load_config, save_config
 from tinirag.core.cache import make_cache
 from tinirag.core.engine import QueryResult, run_query, startup_check
 from tinirag.core.renderer import print_error, print_info, print_sources, print_warning
@@ -29,6 +32,8 @@ app = typer.Typer(
 )
 console = Console()
 
+_DEBUG = os.getenv("TINIRAG_DEBUG") == "1"
+
 
 def _run(coro: object) -> object:
     """Run a coroutine from a sync Typer command."""
@@ -41,6 +46,37 @@ def _handle_result(result: QueryResult, cfg_output: object, verify: bool) -> Non
         print_warning(w)
     if getattr(cfg_output, "show_sources", True) and result.sources:
         print_sources(result.sources)
+
+
+def _handle_llm_error(exc: Exception, endpoint: str, model: str | None) -> None:
+    """Print a clean error for known LLM failure modes. Re-raise unexpected errors."""
+    import httpx as _httpx
+
+    try:
+        import openai as _openai
+
+        _openai_errors = (_openai.NotFoundError, _openai.APIConnectionError)
+    except ImportError:
+        _openai_errors = ()  # type: ignore[assignment]
+
+    if _DEBUG:
+        raise exc
+
+    exc_str = str(exc).lower()
+
+    if _openai_errors and isinstance(exc, _openai.NotFoundError) and "model" in exc_str:
+        name = model or "unknown"
+        print_error(
+            f"Model '{name}' not found in Ollama.\n"
+            f"    Run `ollama list` to see installed models.\n"
+            f"    Run `ollama pull {name}` to install it."
+        )
+    elif _openai_errors and isinstance(exc, _openai.APIConnectionError):
+        print_error(f"Cannot reach Ollama at {endpoint}.\n    Is Ollama running? Try: ollama serve")
+    elif isinstance(exc, _httpx.ConnectError):
+        print_error(f"Cannot connect to {endpoint}.\n    Is Ollama running? Try: ollama serve")
+    else:
+        raise exc  # unexpected — show traceback
 
 
 # ---------------------------------------------------------------------------
@@ -74,9 +110,10 @@ def _default(
     cache = make_cache(cfg.cache.backend, cfg.cache.ttl_minutes) if cfg.cache.enabled else None
 
     async def _run_it() -> None:
-        if not no_search:
-            await startup_check(cfg)
         try:
+            # Always run startup_check — passes no_search so SearXNG is skipped when disabled
+            await startup_check(cfg, no_search=no_search)
+
             result = await run_query(
                 query,
                 cfg,
@@ -85,9 +122,14 @@ def _default(
                 cache=cache,
                 history=history,
             )
+        except SystemExit:
+            raise
         except ValueError as exc:
             print_error(str(exc))
             raise typer.Exit(1) from exc
+        except Exception as exc:
+            _handle_llm_error(exc, cfg.llm.endpoint, cfg.llm.model)
+            raise typer.Exit(1)
 
         if cfg.output.show_keywords and result.keywords:
             print_info(f"Keywords: {result.keywords}")
@@ -130,8 +172,13 @@ def chat(
 
     async def _loop() -> None:
         nonlocal title
-        if not no_search:
-            await startup_check(cfg)
+        try:
+            await startup_check(cfg, no_search=no_search)
+        except SystemExit:
+            raise
+        except Exception as exc:
+            _handle_llm_error(exc, cfg.llm.endpoint, cfg.llm.model)
+            raise typer.Exit(1)
 
         while True:
             try:
@@ -153,6 +200,9 @@ def chat(
                 )
             except ValueError as exc:
                 print_error(str(exc))
+                continue
+            except Exception as exc:
+                _handle_llm_error(exc, cfg.llm.endpoint, cfg.llm.model)
                 continue
 
             messages.append({"role": "user", "content": raw})
@@ -300,24 +350,33 @@ def status() -> None:
                 "run `tinirag <query>` to auto-start",
             )
     else:
-        # User-managed — do a live health check
-        import asyncio
-
-        from tinirag.core.search import check_searxng
-
-        ok = asyncio.run(check_searxng(cfg.search.searxng_url))
+        ok = asyncio.run(
+            __import__("tinirag.core.search", fromlist=["check_searxng"]).check_searxng(
+                cfg.search.searxng_url
+            )
+        )
         label = "[green]reachable[/green]" if ok else "[red]unreachable[/red]"
         table.add_row("SearXNG", label, f"user-managed at {cfg.search.searxng_url}")
 
     # Ollama status
     endpoint_base = _endpoint_base(cfg.llm.endpoint)
     if is_ollama_running(endpoint_base):
-        model_ok = check_model_available(cfg.llm.model, endpoint_base)
-        detail = (
-            f"model '{cfg.llm.model}' ready"
-            if model_ok
-            else f"model '{cfg.llm.model}' not pulled — run `ollama pull {cfg.llm.model}`"
-        )
+        # Resolve model for display: use configured value or auto-detect
+        display_model = cfg.llm.model
+        if display_model is None:
+            from tinirag.core.model_detect import detect_available_model
+
+            display_model = detect_available_model(endpoint_base)
+
+        if display_model:
+            model_ok = check_model_available(display_model, endpoint_base)
+            detail = (
+                f"model '{display_model}' ready"
+                if model_ok
+                else f"model '{display_model}' not pulled — run `ollama pull {display_model}`"
+            )
+        else:
+            detail = "no models installed — run `ollama pull llama3.2:3b`"
         table.add_row("Ollama", "[green]running[/green]", detail)
     else:
         table.add_row("Ollama", "[red]not running[/red]", "run: ollama serve")
@@ -331,34 +390,25 @@ def status() -> None:
 
 
 @app.command()
-def setup() -> None:
-    """Guided first-run setup: verify install, write settings, pull default model."""
-    from tinirag.core.engine import (
-        _endpoint_base,
-        check_model_available,
-        is_ollama_running,
-        pull_model,
-    )
-    from tinirag.core.searxng_manager import get_settings_path
+def setup(
+    with_search: bool = typer.Option(False, "--with-search", help="Also configure SearXNG search."),
+) -> None:
+    """Guided first-run setup: verify install, detect model, optionally configure search."""
+    from tinirag.core.engine import _endpoint_base, is_ollama_running
+    from tinirag.core.model_detect import detect_available_model
 
     cfg = load_config()
-    console.print("[bold blue]TiniRAG v0.2 Setup[/bold blue]\n")
+    console.print("[bold blue]TiniRAG Setup[/bold blue]\n")
 
-    # 1. Verify searx is importable
-    try:
-        import importlib
-
-        importlib.import_module("searx.webapp")
-        print_info("SearXNG (searx package): found")
-    except ImportError:
-        print_error("searx not found. Run: pip install searxng")
+    # 1. Verify Python version
+    if sys.version_info < (3, 11):
+        print_error(
+            f"Python 3.11+ required. You have {sys.version_info.major}.{sys.version_info.minor}"
+        )
         raise typer.Exit(1)
+    print_info(f"Python {sys.version_info.major}.{sys.version_info.minor}: OK")
 
-    # 2. Write settings.yml on first run
-    settings_path = get_settings_path()
-    print_info(f"SearXNG settings: {settings_path}")
-
-    # 3. Check Ollama
+    # 2. Check Ollama reachability
     endpoint_base = _endpoint_base(cfg.llm.endpoint)
     if not is_ollama_running(endpoint_base):
         print_error(
@@ -367,16 +417,48 @@ def setup() -> None:
         raise typer.Exit(1)
     print_info("Ollama: running")
 
-    # 4. Pull model if needed
-    if not check_model_available(cfg.llm.model, endpoint_base):
-        print_info(f"Pulling model '{cfg.llm.model}' (this may take a few minutes)...")
-        try:
-            pull_model(cfg.llm.model, endpoint_base)
-            print_info(f"Model '{cfg.llm.model}' ready.")
-        except RuntimeError as exc:
-            print_error(str(exc))
-            raise typer.Exit(1) from exc
+    # 3. List installed models / auto-detect best one
+    detected = detect_available_model(endpoint_base)
+    if detected:
+        print_info(f"Auto-detects your installed Ollama models — using: {detected}")
+        cfg.llm.model = detected
     else:
-        print_info(f"Model '{cfg.llm.model}': already available")
+        # No models found — offer to pull one
+        answer = typer.prompt(
+            "\nNo models found. Pull recommended model llama3.2:3b? [Y/n]", default="Y"
+        )
+        if answer.strip().upper() in ("Y", ""):
+            print_info("Pulling llama3.2:3b (this may take a few minutes)...")
+            result = subprocess.run(["ollama", "pull", "llama3.2:3b"])
+            if result.returncode == 0:
+                print_info("Model llama3.2:3b ready.")
+                cfg.llm.model = "llama3.2:3b"
+            else:
+                print_error("Pull failed. Try manually: ollama pull llama3.2:3b")
+                raise typer.Exit(1)
+        else:
+            print_warning("No model configured. Set one with: tinirag -m <model-name> ...")
+
+    # 4. Save config with detected model
+    if cfg.llm.model:
+        save_config(cfg)
+        print_info(f"Config saved. Model: {cfg.llm.model}")
+
+    # 5. SearXNG (only with --with-search flag)
+    if with_search:
+        try:
+            import importlib
+
+            importlib.import_module("searx.webapp")
+            from tinirag.core.searxng_manager import get_settings_path
+
+            settings_path = get_settings_path()
+            print_info(f"SearXNG: found — settings at {settings_path}")
+        except ImportError:
+            print_warning(
+                "searx package not installed. To enable search:\n"
+                "    pipx inject tinirag searxng\n"
+                "    (or: pip install searxng  if not using pipx)"
+            )
 
     console.print('\n[bold green]Setup complete![/bold green] Run: tinirag "your question"')

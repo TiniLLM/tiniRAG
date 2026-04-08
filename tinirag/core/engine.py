@@ -18,6 +18,7 @@ from tinirag.core.guardrails import (
     sensitive_category,
     validate_query,
 )
+from tinirag.core.model_detect import detect_available_model
 from tinirag.core.optimizer import optimize_query
 from tinirag.core.renderer import (
     _collect_stream,
@@ -92,20 +93,21 @@ def _endpoint_base(endpoint: str) -> str:
     return endpoint.rstrip("/").removesuffix("/v1")
 
 
-async def startup_check(cfg: TiniRAGConfig) -> None:
+async def startup_check(cfg: TiniRAGConfig, *, no_search: bool = False) -> None:
     """Verify Ollama + model are ready. Auto-pull model if missing (GR-R0 for LLM).
 
-    Also starts the embedded SearXNG daemon if managed_searxng is enabled.
-    SearXNG failure is non-fatal — run_query degrades gracefully to model-only mode.
+    Also starts the embedded SearXNG daemon if managed_searxng is enabled and
+    no_search is False. SearXNG failure is non-fatal — run_query degrades gracefully.
     """
-    # --- Embedded SearXNG daemon (non-fatal if it fails to start) ---
-    if cfg.search.managed_searxng:
+    # --- Embedded SearXNG daemon (non-fatal, only when search is enabled) ---
+    if not no_search and cfg.search.managed_searxng:
         from tinirag.core.searxng_manager import ensure_running
 
         ok = ensure_running(cfg.search.searxng_port, cfg.search.searxng_startup_timeout_sec)
         if not ok:
             print_warning(
                 "SearXNG failed to start — queries will use model knowledge only.\n"
+                "    To enable search: pipx inject tinirag searxng\n"
                 "    Diagnose: tinirag logs --searxng  |  tinirag status"
             )
 
@@ -124,6 +126,16 @@ async def startup_check(cfg: TiniRAGConfig) -> None:
                 "No LLM runtime detected. Start Ollama (`ollama serve`) or configure "
                 "TINIRAG_ENDPOINT to point to your running endpoint."
             )
+            raise SystemExit(1)
+
+    # --- Model resolution (priority: cfg value → auto-detect) ---
+    if cfg.llm.model is None:
+        detected_model = detect_available_model(endpoint_base)
+        if detected_model:
+            cfg.llm.model = detected_model
+            print_info(f"Using model '{detected_model}' (auto-detected)")
+        else:
+            print_error("No Ollama models found. Install one with:\n    ollama pull llama3.2:3b")
             raise SystemExit(1)
 
     if not check_model_available(cfg.llm.model, endpoint_base):

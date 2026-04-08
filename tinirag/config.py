@@ -33,7 +33,7 @@ ENDPOINT_PROBE_ORDER = [
 @dataclass
 class LLMConfig:
     endpoint: str = "http://localhost:11434/v1"
-    model: str = "llama3"
+    model: str | None = None  # None = auto-detect from installed Ollama models
     temperature: float = 0.0
     max_tokens: int = 1024
     stream: bool = True
@@ -171,14 +171,17 @@ def load_config() -> TiniRAGConfig:
 def save_config(cfg: TiniRAGConfig) -> None:
     """Write config back to ~/.tinirag/config.toml using tomli_w."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    llm_section: dict = {
+        "endpoint": cfg.llm.endpoint,
+        "temperature": cfg.llm.temperature,
+        "max_tokens": cfg.llm.max_tokens,
+        "stream": cfg.llm.stream,
+    }
+    if cfg.llm.model is not None:
+        llm_section["model"] = cfg.llm.model
+
     data = {
-        "llm": {
-            "endpoint": cfg.llm.endpoint,
-            "model": cfg.llm.model,
-            "temperature": cfg.llm.temperature,
-            "max_tokens": cfg.llm.max_tokens,
-            "stream": cfg.llm.stream,
-        },
+        "llm": llm_section,
         "search": {
             "searxng_url": cfg.search.searxng_url,
             "num_results": cfg.search.num_results,

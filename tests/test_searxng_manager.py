@@ -186,13 +186,14 @@ class TestStartDaemon:
 
         assert result is False
 
-    def test_searx_not_importable_raises_runtime_error(self, tmp_path):
+    def test_searx_not_importable_returns_false(self, tmp_path):
+        """Bug 1 fix: missing searx module must return False, not raise RuntimeError."""
         with (
             patch("importlib.import_module", side_effect=ImportError("No module named searx")),
             patch.object(mgr, "_ensure_settings"),
         ):
-            with pytest.raises(RuntimeError, match="searx.webapp not importable"):
-                mgr.start_daemon()
+            result = mgr.start_daemon()
+        assert result is False
 
     def test_writes_pid_file(self, tmp_path):
         mock_proc = MagicMock()
