@@ -42,6 +42,22 @@ class TestLoadConfig:
         assert cfg.guardrails.max_context_pct == 0.90
         assert cfg.guardrails.min_content_chars == 100
 
+    def test_new_search_config_defaults(self):
+        cfg = load_config()
+        assert cfg.search.managed_searxng is True
+        assert cfg.search.searxng_port == 18888
+        assert cfg.search.searxng_startup_timeout_sec == 30.0
+        assert cfg.search.searxng_url == "http://localhost:18888"
+        assert cfg.search.time_range == "month"
+        assert cfg.search.num_results == 3
+
+    def test_env_var_searxng_url_disables_managed(self, monkeypatch):
+        """TINIRAG_SEARXNG_URL env var must set managed_searxng=False."""
+        monkeypatch.setenv("TINIRAG_SEARXNG_URL", "http://localhost:9090")
+        cfg = load_config()
+        assert cfg.search.searxng_url == "http://localhost:9090"
+        assert cfg.search.managed_searxng is False
+
 
 class TestSaveConfig:
     def test_save_and_reload(self, tmp_path, monkeypatch):
@@ -150,3 +166,16 @@ class TestLoadConfigToml:
 
         cfg = load_config()
         assert cfg.llm.endpoint == "http://env-endpoint:9999/v1"
+
+    def test_explicit_searxng_url_in_toml_disables_managed(self, tmp_path, monkeypatch):
+        """Explicit searxng_url in config.toml must set managed_searxng=False."""
+        import tinirag.config as cfg_module
+
+        cfg_file = tmp_path / "config.toml"
+        cfg_file.write_text('[search]\nsearxng_url = "http://localhost:8888"\n')
+        monkeypatch.setattr(cfg_module, "CONFIG_DIR", tmp_path)
+        monkeypatch.setattr(cfg_module, "CONFIG_FILE", cfg_file)
+
+        cfg = load_config()
+        assert cfg.search.searxng_url == "http://localhost:8888"
+        assert cfg.search.managed_searxng is False

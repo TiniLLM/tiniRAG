@@ -93,7 +93,22 @@ def _endpoint_base(endpoint: str) -> str:
 
 
 async def startup_check(cfg: TiniRAGConfig) -> None:
-    """Verify Ollama + model are ready. Auto-pull model if missing (GR-R0 for LLM)."""
+    """Verify Ollama + model are ready. Auto-pull model if missing (GR-R0 for LLM).
+
+    Also starts the embedded SearXNG daemon if managed_searxng is enabled.
+    SearXNG failure is non-fatal — run_query degrades gracefully to model-only mode.
+    """
+    # --- Embedded SearXNG daemon (non-fatal if it fails to start) ---
+    if cfg.search.managed_searxng:
+        from tinirag.core.searxng_manager import ensure_running
+
+        ok = ensure_running(cfg.search.searxng_port, cfg.search.searxng_startup_timeout_sec)
+        if not ok:
+            print_warning(
+                "SearXNG failed to start — queries will use model knowledge only.\n"
+                "    Diagnose: tinirag logs --searxng  |  tinirag status"
+            )
+
     endpoint_base = _endpoint_base(cfg.llm.endpoint)
 
     if not is_ollama_running(endpoint_base):
@@ -243,8 +258,8 @@ async def run_query(
             if not await check_searxng(cfg.search.searxng_url):
                 print_warning(
                     f"SearXNG not reachable at {cfg.search.searxng_url}\n"
-                    "    Start it: docker run -d -p 8888:8080 searxng/searxng\n"
-                    "    Or set TINIRAG_SEARXNG_URL to your instance."
+                    "    Run `tinirag status` to diagnose.\n"
+                    "    Run `tinirag stop` then re-run your query to restart."
                 )
                 no_search = True
             else:

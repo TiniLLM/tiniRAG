@@ -25,6 +25,7 @@ from tinirag.core.engine import (
 def _make_cfg(**kwargs) -> TiniRAGConfig:
     cfg = TiniRAGConfig()
     cfg.llm.stream = False  # simplify tests — no streaming
+    cfg.search.managed_searxng = False  # tests don't trigger the SearXNG daemon
     for key, val in kwargs.items():
         parts = key.split(".")
         obj = cfg
@@ -100,6 +101,46 @@ class TestStartupCheck:
         ):
             with pytest.raises(SystemExit):
                 await startup_check(cfg)
+
+    @pytest.mark.asyncio
+    async def test_managed_searxng_calls_ensure_running(self):
+        """When managed_searxng=True, startup_check must call ensure_running."""
+        cfg = _make_cfg()
+        cfg.search.managed_searxng = True
+        with (
+            patch("tinirag.core.engine.is_ollama_running", return_value=True),
+            patch("tinirag.core.engine.check_model_available", return_value=True),
+            patch("tinirag.core.searxng_manager.ensure_running", return_value=True) as mock_er,
+        ):
+            await startup_check(cfg)
+            mock_er.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_unmanaged_searxng_skips_ensure_running(self):
+        """When managed_searxng=False, startup_check must NOT call ensure_running."""
+        cfg = _make_cfg()
+        cfg.search.managed_searxng = False
+        with (
+            patch("tinirag.core.engine.is_ollama_running", return_value=True),
+            patch("tinirag.core.engine.check_model_available", return_value=True),
+            patch("tinirag.core.searxng_manager.ensure_running") as mock_er,
+        ):
+            await startup_check(cfg)
+            mock_er.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_searxng_start_failure_is_non_fatal(self):
+        """If SearXNG fails to start, startup_check must NOT raise SystemExit."""
+        cfg = _make_cfg()
+        cfg.search.managed_searxng = True
+        with (
+            patch("tinirag.core.engine.is_ollama_running", return_value=True),
+            patch("tinirag.core.engine.check_model_available", return_value=True),
+            patch("tinirag.core.searxng_manager.ensure_running", return_value=False),
+            patch("tinirag.core.engine.print_warning"),
+        ):
+            # Must complete without raising
+            await startup_check(cfg)
 
 
 # ---------------------------------------------------------------------------

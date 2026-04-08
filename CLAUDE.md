@@ -78,19 +78,33 @@ User query
 
 Probe ports in order: Ollama (11434) → vLLM/transformers (8000) → LM Studio (1234) → llama.cpp (8080). Configured via `TINIRAG_ENDPOINT` env var or `llm.endpoint` in config.toml.
 
-## SearXNG Setup
+## SearXNG — Auto-Managed (v0.2+)
 
+SearXNG ships as a pip dependency (`searxng==0.0.0.dev0`). No Docker required.
+
+**Install:**
 ```bash
-# Minimal Docker setup
-docker run -d --name searxng -p 8888:8080 searxng/searxng:latest
-# settings.yml must include: search.formats: [html, json]
+pip install tinirag   # includes searxng
+tinirag "your question"  # auto-starts SearXNG on port 18888
 ```
 
-API call: `GET /search?q={keywords}&format=json&categories=general&pageno=1&time_range=year`
-(`time_range=year` reduces SearXNG aggregation latency 20–40%.)
+**Daemon lifecycle** (`tinirag/core/searxng_manager.py`):
+- `ensure_running()` — idempotent; PID+health check fast-path adds <5ms when already running
+- `start_daemon()` — spawns `sys.executable -m searx.webapp` with `start_new_session=True` (survives parent exit); polls `GET /healthz` every 0.5s up to `startup_timeout`
+- `stop_daemon()` — SIGTERM → SIGKILL fallback; always clears PID file
+- PID tracked in `~/.tinirag/searxng.pid`; settings in `~/.tinirag/searxng/settings.yml` (copied from `tinirag/data/settings.yml` on first run, never overwritten)
+
+**Opt out** — set `TINIRAG_SEARXNG_URL=http://localhost:8888` or `searxng_url` in config.toml; auto-sets `managed_searxng=False` (existing Docker users unaffected).
+
+**CLI commands:** `tinirag stop` · `tinirag status` · `tinirag setup`
+
+**Testability:** `_health_check(port)` and `_spawn_subprocess(env)` are extracted helpers — mock via `patch.object(mgr, "_health_check")` / `patch.object(mgr, "_spawn_subprocess")`. Never patch `httpx.get` or `subprocess.Popen` directly in these tests — cross-module patching does not intercept correctly.
+
+API call: `GET /search?q={keywords}&format=json&categories=general&pageno=1&time_range={cfg.search.time_range}`
+(Default `time_range="month"` reduces SearXNG aggregation latency vs `"year"`.)
 
 ## Python Version Notes
 
-- Minimum: Python 3.10+
-- `tomllib` is stdlib only on 3.11+; use `tomli` on 3.10 (conditional import)
-- `tomllib` is **read-only** — use `tomli_w` for all config writes
+- Minimum: Python 3.11+ (required by `searxng==0.0.0.dev0`)
+- Always `import tomli as tomllib` — never stdlib `tomllib` (explicit pip dep, constraint 7)
+- `tomli_w` for all config writes

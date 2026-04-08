@@ -61,8 +61,10 @@ async def search_and_fetch(
     blocklist = load_blocklist()
     results: list[dict] = []
 
+    # Faster connect timeout for localhost (managed SearXNG on 127.0.0.1)
+    is_local = "127.0.0.1" in cfg.search.searxng_url or "localhost" in cfg.search.searxng_url
     timeout = httpx.Timeout(
-        connect=2.0,
+        connect=0.5 if is_local else 2.0,
         read=cfg.search.fetch_timeout_sec,
         write=2.0,
         pool=8.0,
@@ -80,7 +82,7 @@ async def search_and_fetch(
             "format": "json",
             "categories": "general",
             "pageno": 1,
-            "time_range": "year",  # OPT-07: reduces aggregation latency 20–40%
+            "time_range": cfg.search.time_range,  # OPT-07: configurable; "month" faster than "year"
         }
         try:
             resp = await client.get(f"{cfg.search.searxng_url}/search", params=params)
@@ -92,7 +94,8 @@ async def search_and_fetch(
         if "application/json" not in content_type:
             raise RuntimeError(
                 "SearXNG returned HTML instead of JSON. "
-                "Add 'json' to search.formats in settings.yml and restart the container.\n"
+                "Ensure search.formats includes 'json' in ~/.tinirag/searxng/settings.yml "
+                "and run `tinirag stop` to restart.\n"
                 f"Content-Type received: {content_type}"
             )
 

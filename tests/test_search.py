@@ -12,8 +12,9 @@ from tinirag.core.search import check_searxng, search_and_fetch
 
 def _make_cfg() -> TiniRAGConfig:
     cfg = TiniRAGConfig()
-    cfg.search.num_results = 3
+    cfg.search.num_results = 3  # matches new default
     cfg.search.fetch_top_url = False  # disable URL fetching in unit tests
+    cfg.search.managed_searxng = False
     return cfg
 
 

@@ -1,0 +1,47 @@
+# TiniRAG embedded SearXNG configuration
+# Copied to ~/.tinirag/searxng/settings.yml on first run.
+# TiniRAG will NEVER overwrite this file once it exists — edit freely.
+
+use_default_settings: true
+
+server:
+  port: 18888
+  bind_address: "127.0.0.1"
+  secret_key: "tinirag-embedded-please-change-in-production"
+  public_instance: false
+
+search:
+  formats:
+    - json        # CRITICAL: without this SearXNG returns HTML (TiniRAG will error)
+
+engines:
+  # Fast, no-API-key engines — all run in parallel by SearXNG
+  - name: google
+    engine: google
+    categories: general
+    timeout: 3.0
+    disabled: false
+
+  - name: bing
+    engine: bing
+    categories: general
+    timeout: 3.0
+    disabled: false
+
+  - name: duckduckgo
+    engine: duckduckgo
+    categories: general
+    timeout: 3.0
+    disabled: false
+
+  - name: brave
+    engine: brave
+    categories: general
+    timeout: 3.0
+    disabled: false
+
+  - name: wikipedia
+    engine: wikipedia
+    categories: general
+    timeout: 3.0
+    disabled: false

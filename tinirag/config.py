@@ -3,18 +3,12 @@
 from __future__ import annotations
 
 import os
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from dotenv import load_dotenv
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:
-    import tomli as tomllib  # type: ignore[no-redef]
-
+import tomli as tomllib  # always the pip package — Python 3.10 safe (constraint 7)
 import tomli_w
+from dotenv import load_dotenv
 
 CONFIG_DIR = Path.home() / ".tinirag"
 CONFIG_FILE = CONFIG_DIR / "config.toml"
@@ -23,6 +17,9 @@ BLOCKLIST_FILE = CONFIG_DIR / "blocklist.txt"
 GUARDRAIL_LOG = CONFIG_DIR / "guardrail.log"
 HISTORY_FILE = CONFIG_DIR / "history.jsonl"
 SESSIONS_DIR = CONFIG_DIR / "sessions"
+SEARXNG_DIR = CONFIG_DIR / "searxng"
+SEARXNG_PID_FILE = CONFIG_DIR / "searxng.pid"
+SEARXNG_LOG_FILE = CONFIG_DIR / "searxng.log"
 
 # Default LLM endpoint probe order (port → runtime)
 ENDPOINT_PROBE_ORDER = [
@@ -44,10 +41,14 @@ class LLMConfig:
 
 @dataclass
 class SearchConfig:
-    searxng_url: str = "http://localhost:8888"
-    num_results: int = 5
+    searxng_url: str = "http://localhost:18888"
+    num_results: int = 3
     fetch_top_url: bool = True
     fetch_timeout_sec: float = 2.5
+    managed_searxng: bool = True  # False = user manages their own instance
+    searxng_port: int = 18888  # port for auto-managed instance
+    searxng_startup_timeout_sec: float = 30.0
+    time_range: str = "month"  # passed to SearXNG; "month" faster than "year"
 
 
 @dataclass
@@ -108,12 +109,21 @@ def load_config() -> TiniRAGConfig:
             cfg.llm.stream = llm.get("stream", cfg.llm.stream)
 
         if search := data.get("search"):
+            if "searxng_url" in search:
+                # User explicitly set a URL — they manage SearXNG themselves
+                cfg.search.managed_searxng = False
             cfg.search.searxng_url = search.get("searxng_url", cfg.search.searxng_url)
             cfg.search.num_results = search.get("num_results", cfg.search.num_results)
             cfg.search.fetch_top_url = search.get("fetch_top_url", cfg.search.fetch_top_url)
             cfg.search.fetch_timeout_sec = search.get(
                 "fetch_timeout_sec", cfg.search.fetch_timeout_sec
             )
+            cfg.search.managed_searxng = search.get("managed_searxng", cfg.search.managed_searxng)
+            cfg.search.searxng_port = search.get("searxng_port", cfg.search.searxng_port)
+            cfg.search.searxng_startup_timeout_sec = search.get(
+                "searxng_startup_timeout_sec", cfg.search.searxng_startup_timeout_sec
+            )
+            cfg.search.time_range = search.get("time_range", cfg.search.time_range)
 
         if cache := data.get("cache"):
             cfg.cache.enabled = cache.get("enabled", cfg.cache.enabled)
@@ -151,6 +161,7 @@ def load_config() -> TiniRAGConfig:
         cfg.llm.endpoint = ep
     if surl := os.getenv("TINIRAG_SEARXNG_URL"):
         cfg.search.searxng_url = surl
+        cfg.search.managed_searxng = False  # user is managing their own SearXNG
     if model := os.getenv("TINIRAG_MODEL"):
         cfg.llm.model = model
 
@@ -173,6 +184,10 @@ def save_config(cfg: TiniRAGConfig) -> None:
             "num_results": cfg.search.num_results,
             "fetch_top_url": cfg.search.fetch_top_url,
             "fetch_timeout_sec": cfg.search.fetch_timeout_sec,
+            "managed_searxng": cfg.search.managed_searxng,
+            "searxng_port": cfg.search.searxng_port,
+            "searxng_startup_timeout_sec": cfg.search.searxng_startup_timeout_sec,
+            "time_range": cfg.search.time_range,
         },
         "cache": {
             "enabled": cfg.cache.enabled,
